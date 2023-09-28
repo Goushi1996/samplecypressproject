@@ -1,0 +1,111 @@
+
+jobs:
+  - job: exeucte the test suite
+    timeoutInMinutes: 90
+    strategy:
+      maxParallel: 2
+      matrix: 
+        Group1:
+          groupName: grp1
+          cypressScript: 'cypress/e2e/test1.cy.js'
+        Group2:
+          groupName: grp2
+          cypressScript: 'cypress/e2e/test2.cy.js'
+    displayName: Run test suite with 
+    steps:
+      - task: NodeTool@0
+        inputs:
+          versionSpec: '16.x'
+        displayName: 'Install Node.js'
+      - task: Npm@1
+        displayName: 'Install Environment Dependencies'
+        inputs:
+          command: 'install'
+          verbose: true
+      - script: |
+          set -e
+          npx cypress run --browser chrome  --env groupName=$(groupName) --spec $(cypressScript)
+        displayName: "Running Test Suite"
+      - script: |
+          if test -d test-results;
+          then
+            echo "Remove existing test results"
+            rm -rf test-results
+          else
+            echo "Previous test results doesn't exist"
+          fi
+          mkdir test-results
+          mv cypress/reports test-results/
+          if test -d cypress/screenshots;
+          then
+            mv cypress/screenshots test-results/
+          fi
+          if test -d cypress/utils;
+          then
+            mv cypress/utils test-results/
+          fi
+          if test -d cypress/videos;
+          then
+            mv cypress/videos test-results/
+          fi
+          if test -d cypress/hars;
+          then
+            mv cypress/hars test-results/
+          fi
+          if test -d cypress/logs;
+          then
+            mv cypress/logs test-results/
+          fi
+        displayName: "Grouping Test Suite Results for Publishing"
+      - script:  |
+            cd test-results/reports/mocha
+            for file in *.json ; do
+              mv ./"$file" "${file%.json}-$(groupName).json"
+            done
+        displayName: 'Rename mocha reports to include the group name'
+        condition: always()
+      - task: PublishPipelineArtifact@1
+        name: publishRecording
+        displayName: 'Publish Test Suite Results'
+        inputs:
+          targetPath: './test-results'
+          artifactName: $(groupName)
+  - job: combine
+    dependsOn: test_job
+    condition: succeededOrFailed()
+    displayName: Merge Test Results
+    steps:
+      - checkout: none
+      - task: DownloadPipelineArtifact@2
+        inputs:
+          buildType: 'current'
+          downloadPath: "$(Pipeline.Workspace)"
+      - task: NodeTool@0
+        inputs:
+          versionSpec: '16.x'
+        displayName: 'Install Node.js'
+      - script: |
+          sudo apt-get update
+          sudo apt --fix-broken install
+          sudo apt-get -fy install jq
+        displayName: Install JQ
+      - script: | 
+            npm install mochawesome mochawesome-report-generator
+            mv ./grp1/reports/mocha/*.json ./grp2/reports/mocha
+            cd ./grp2
+            rm -rf reports/mochareports
+            npx mochawesome-merge reports/mocha/*.json -o reports/mochareports/report.json 
+            npx marge reports/mochareports/*.json -o reports/mochareports
+        workingDirectory: $(Pipeline.Workspace)
+        displayName: 'Combine Mocha Reports'
+      - task: CopyFiles@2
+        inputs:
+          SourceFolder: '$(Pipeline.Workspace)/grp1'
+          TargetFolder: '$(Pipeline.Workspace)/grp2' 
+      - task: PublishPipelineArtifact@1
+        name: publishRecording
+        condition: succeededOrFailed()
+        displayName: 'Publish Test Suite Results'
+        inputs:
+          targetPath: '$(Pipeline.Workspace)/grp2'
+          artifactName: 'combined-results'
